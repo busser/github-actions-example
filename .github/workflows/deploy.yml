@@ -1,0 +1,68 @@
+on:
+  push:
+    branches:
+      - master
+
+env:
+  IMAGE_REPOSITORY: busser/foobar
+  KUBECTL_VERSION: '1.14.10'
+  KUSTOMIZE_VERSION: '3.5.4'
+
+jobs:
+  build-and-push-container-image:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out source code
+      - name: Check out source code
+        uses: actions/checkout@v2
+
+      # Build and push container image
+      - name: Build and push container image
+        uses: docker/build-push-action@v1
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          repository: ${{ env.IMAGE_REPOSITORY }}
+          tags: latest
+          tag_with_ref: true
+          tag_with_sha: true # sha-${GITHUB_SHA::7}
+
+  deploy-to-kubernetes:
+    runs-on: ubuntu-latest
+    needs: build-and-push-container-image
+    steps:
+      # Check out source code
+      - name: Check out source code
+        uses: actions/checkout@v2
+
+      # Set up kubectl
+      - name: Set up kubectl
+        run: |-
+          curl -sfLo kubectl https://storage.googleapis.com/kubernetes-release/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl
+          chmod u+x kubectl
+
+      # Configure kubectl
+      - name: Configure kubectl
+        run: |-
+          echo ${{ secrets.KUBECONFIG }}
+          echo ${{ secrets.KUBECONFIG }} | base64 --decode > kubeconfig.yml
+
+      # Set up Kustomize
+      - name: Set up Kustomize
+        run: |-
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"  | bash
+          ls -lR
+
+      # Kustomize Kubernetes resources
+      - name: Kustomize Kubernetes resources
+        working-directory: ./manifests
+        run: |-
+          ../kustomize edit set image REPOSITORY:TAG=$IMAGE_REPOSITORY:sha-${GITHUB_SHA::7}
+
+      # Deploy to Kubernetes
+      - name: Deploy to Kubernetes
+        run: ./kubectl --kubeconfig kubeconfig.yml apply --kustomize manifests/
+
+      # Validate deployment
+      - name: Validate deployment
+        run: ./kubectl --kubeconfig kubeconfig.yml rollout status --timeout 120s deployment/foobar
